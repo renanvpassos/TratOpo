@@ -17,6 +17,7 @@ def formatar_numero_br(valor):
         if "," in val_str and "." in val_str:
             val_str = val_str.replace(",", "")
         num = float(val_str)
+        # Substitui o ponto decimal por vírgula mantendo todas as casas decimais originais
         return str(num).replace(".", ",")
     except ValueError:
         return str(valor).replace(".", ",")
@@ -98,10 +99,14 @@ if uploaded_file is not None:
         if invoice_num == "NÃO ENCONTRADO":
             invoice_num = extrair_invoice(df_pl_raw)
 
-        def encontrar_coluna(colunas, termos):
+        def encontrar_coluna(colunas, termos_obrigatorios, termos_proibidos=None):
+            """Busca flexível de colunas garantindo termos obrigatórios e rejeitando proibidos (ex: evitar 'Total N.W' se quiser apenas 'N.W')."""
+            termos_proibidos = termos_proibidos or []
             for c in colunas:
                 c_clean = str(c).upper()
-                if all(termo in c_clean for termo in termos):
+                tem_obrigatorio = all(t in c_clean for t in termos_obrigatorios)
+                tem_proibido = any(t in c_clean for t in termos_proibidos)
+                if tem_obrigatorio and not tem_proibido:
                     return c
             return None
 
@@ -122,13 +127,16 @@ if uploaded_file is not None:
         df_ci_valid[col_mat_ci] = df_ci_valid[col_mat_ci].astype(str).str.strip()
         df_ci_valid = df_ci_valid[~df_ci_valid[col_mat_ci].str.lower().isin(["total", "nan", ""])]
 
-        # 2. Configurações da aba PL (Material Code / CODE, Peso N.W e Quantidade)
+        # 2. Configurações da aba PL (Material Code, N.W exato e Quantidade)
         col_mat_pl = encontrar_coluna(df_pl.columns, ["CODE"]) or encontrar_coluna(df_pl.columns, ["MATERIAL"]) or (df_pl.columns[24] if len(df_pl.columns) > 24 else None)
+        
+        # Procura por "N.W" estrito (evitando "TOTAL N.W" caso haja separação)
         col_nw_pl = (
-            encontrar_coluna(df_pl.columns.astype(str), ["N.W"]) or 
-            encontrar_coluna(df_pl.columns.astype(str), ["WEIGHT"]) or 
+            encontrar_coluna(df_pl.columns.astype(str), ["N.W"], termos_proibidos=["TOTAL"]) or 
+            encontrar_coluna(df_pl.columns.astype(str), ["WEIGHT"], termos_proibidos=["TOTAL"]) or 
             (df_pl.columns[10] if len(df_pl.columns) > 10 else None)
         )
+        
         col_qty_pl = (
             encontrar_coluna(df_pl.columns.astype(str), ["QUANTITY"]) or 
             encontrar_coluna(df_pl.columns.astype(str), ["QTY"]) or 
@@ -142,7 +150,7 @@ if uploaded_file is not None:
         df_pl_valid = df_pl[df_pl[col_mat_pl].notna()].copy()
         df_pl_valid[col_mat_pl] = df_pl_valid[col_mat_pl].astype(str).str.strip()
 
-        # Limpeza e conversão numérica rigorosa (padrão americano: ponto decimal) para soma correta
+        # Limpeza e conversão numérica rigorosa para padrão americano (ponto decimal) para realizar a soma correta
         df_pl_valid[col_nw_pl] = pd.to_numeric(
             df_pl_valid[col_nw_pl].astype(str).str.replace(",", ".").str.replace(r"[^\d.-]", "", regex=True), 
             errors="coerce"
@@ -153,7 +161,7 @@ if uploaded_file is not None:
             errors="coerce"
         ).fillna(0)
 
-        # Agrupamento estrito na PL somando os pesos e quantidades para cada PartNumber duplicado
+        # Agrupa na PL somando os pesos e quantidades para cada PartNumber duplicado
         pl_agrupado = df_pl_valid.groupby(col_mat_pl, as_index=False).agg({
             col_nw_pl: "sum",
             col_qty_pl: "sum"
@@ -162,7 +170,7 @@ if uploaded_file is not None:
         mapa_peso = dict(zip(pl_agrupado[col_mat_pl], pl_agrupado[col_nw_pl]))
         mapa_qtd = dict(zip(pl_agrupado[col_mat_pl], pl_agrupado[col_qty_pl]))
 
-        # Monta o DataFrame final baseando-se nos itens da CI, mas puxando Peso e Quantidade exclusivamente da PL
+        # Monta o DataFrame final baseando-se nos itens da CI, puxando Peso Unitário e Quantidade somados da PL
         linhas_resultado = []
         for _, row in df_ci_valid.iterrows():
             partnumber = row[col_mat_ci]
