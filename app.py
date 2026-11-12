@@ -174,7 +174,7 @@ if uploaded_file is not None:
             linhas_resultado.append({
                 "PARTNUMBER": partnumber,
                 "MOEDA": "220",
-                "PESOUNITARIO": formatar_numero_br(peso_soma_pl),
+                "PESOTOTAL": formatar_numero_br(peso_soma_pl),
                 "QUANTIDADE": qtd_formatada,
                 "PRECOTOTAL": formatar_numero_br(preco_bruto),
                 "INVOICE": invoice_num,
