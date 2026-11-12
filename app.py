@@ -45,11 +45,8 @@ def carregar_aba_inteligente(excel_data, sheet_name):
     max_score = -1
     palavras_chave = ["code", "material", "amount", "price", "qty", "quantity", "weight", "n.w", "cip", "description"]
     
-    # Varre as primeiras 30 linhas para achar a linha de cabeçalho ideal (evitando blocos de endereço)
     for idx in range(min(30, len(df_raw))):
         row_vals = [str(v).strip().lower() for v in df_raw.iloc[idx].values if pd.notna(v)]
-        
-        # Pontua com base em quantas colunas típicas de tabela aparecem na linha
         score = sum(1 for p in palavras_chave if any(p in v for v in row_vals))
         tem_material_ou_code = any("code" in v or "material" in v for v in row_vals)
         
@@ -59,7 +56,6 @@ def carregar_aba_inteligente(excel_data, sheet_name):
             
     header_idx = best_row if max_score > 0 else 0
 
-    # Verifica se a linha seguinte complementa o cabeçalho (cabeçalho duplo: ex. MATERIAL em cima e CODE embaixo)
     if header_idx + 1 < len(df_raw):
         next_row_vals = [str(v).strip().lower() for v in df_raw.iloc[header_idx + 1].values if pd.notna(v)]
         score_next = sum(1 for p in palavras_chave if any(p in v for v in next_row_vals))
@@ -109,7 +105,6 @@ if uploaded_file is not None:
                     return c
             return None
 
-        # Busca flexível para as colunas da CI
         col_mat_ci = encontrar_coluna(df_ci.columns, ["CODE"]) or encontrar_coluna(df_ci.columns, ["MATERIAL"])
         col_cip_ci = (
             encontrar_coluna(df_ci.columns, ["CIP", "AMOUNT"]) or 
@@ -125,7 +120,7 @@ if uploaded_file is not None:
             st.error(f"Não foi possível encontrar a coluna de Preço/Amount na aba **CI**. Colunas detectadas: {list(df_ci.columns)}")
             st.stop()
 
-        # Filtra linhas válidas da CI
+        # Filtra linhas válidas da CI (remove linhas vazias ou de Total)
         df_ci_valid = df_ci[df_ci[col_mat_ci].notna()].copy()
         df_ci_valid[col_mat_ci] = df_ci_valid[col_mat_ci].astype(str).str.strip()
         df_ci_valid = df_ci_valid[~df_ci_valid[col_mat_ci].str.lower().isin(["total", "nan", ""])]
@@ -142,9 +137,18 @@ if uploaded_file is not None:
         df_pl_valid = df_pl[df_pl[col_mat_pl].notna()].copy()
         df_pl_valid[col_mat_pl] = df_pl_valid[col_mat_pl].astype(str).str.strip()
 
-        df_pl_valid[col_nw_pl] = pd.to_numeric(df_pl_valid[col_nw_pl].astype(str).str.replace(",", "."), errors="coerce").fillna(0)
-        df_pl_valid[col_qty_pl] = pd.to_numeric(df_pl_valid[col_qty_pl].astype(str).str.replace(",", "."), errors="coerce").fillna(0)
+        # Limpeza e conversão numérica segura para N.W e Quantity na PL
+        df_pl_valid[col_nw_pl] = pd.to_numeric(
+            df_pl_valid[col_nw_pl].astype(str).str.replace(",", ".").str.replace(r"[^\d.-]", "", regex=True), 
+            errors="coerce"
+        ).fillna(0)
+        
+        df_pl_valid[col_qty_pl] = pd.to_numeric(
+            df_pl_valid[col_qty_pl].astype(str).str.replace(",", ".").str.replace(r"[^\d.-]", "", regex=True), 
+            errors="coerce"
+        ).fillna(0)
 
+        # Agrupamento estrito na PL somando tanto o peso total (Total N.W) quanto a quantidade para cada PartNumber repetido
         pl_agrupado = df_pl_valid.groupby(col_mat_pl, as_index=False).agg({
             col_nw_pl: "sum",
             col_qty_pl: "sum"
@@ -153,11 +157,12 @@ if uploaded_file is not None:
         mapa_peso = dict(zip(pl_agrupado[col_mat_pl], pl_agrupado[col_nw_pl]))
         mapa_qtd = dict(zip(pl_agrupado[col_mat_pl], pl_agrupado[col_qty_pl]))
 
+        # Monta o DataFrame final baseando-se nas linhas da CI (se houver duplicadas na CI, unifica ou mantém conforme a listagem da CI)
         linhas_resultado = []
         for _, row in df_ci_valid.iterrows():
             partnumber = row[col_mat_ci]
-            peso_bruto = mapa_peso.get(partnumber, "")
-            qtd_bruta = mapa_qtd.get(partnumber, "")
+            peso_bruto = mapa_peso.get(partnumber, 0)
+            qtd_bruta = mapa_qtd.get(partnumber, 0)
             preco_bruto = row[col_cip_ci]
 
             if isinstance(qtd_bruta, float) and qtd_bruta.is_integer():
