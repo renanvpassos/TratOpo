@@ -126,13 +126,11 @@ if uploaded_file is not None:
         df_ci_valid[col_mat_ci] = df_ci_valid[col_mat_ci].astype(str).str.strip()
         df_ci_valid = df_ci_valid[~df_ci_valid[col_mat_ci].str.lower().isin(["total", "nan", ""])]
 
-        # 2. Configurações da aba PL (Material Code e coluna N.W exata)
+        # 2. Configurações da aba PL (Material Code e Coluna K para o Peso / N.W)
         col_mat_pl = encontrar_coluna(df_pl.columns, ["CODE"]) or encontrar_coluna(df_pl.columns, ["MATERIAL"]) or (df_pl.columns[24] if len(df_pl.columns) > 24 else None)
-        col_nw_pl = (
-            encontrar_coluna(df_pl.columns.astype(str), ["N.W"], termos_proibidos=["TOTAL"]) or 
-            encontrar_coluna(df_pl.columns.astype(str), ["WEIGHT"], termos_proibidos=["TOTAL"]) or 
-            (df_pl.columns[10] if len(df_pl.columns) > 10 else None)
-        )
+        
+        # Garante a captura da coluna K (índice 10) ou por nome contendo N.W na coluna K
+        col_nw_pl = df_pl.columns[10] if len(df_pl.columns) > 10 else encontrar_coluna(df_pl.columns.astype(str), ["N.W"])
 
         if not col_mat_pl or not col_nw_pl:
             st.error(f"Erro ao identificar colunas na aba **PL**. Colunas detectadas: {list(df_pl.columns)}")
@@ -141,13 +139,13 @@ if uploaded_file is not None:
         df_pl_valid = df_pl[df_pl[col_mat_pl].notna()].copy()
         df_pl_valid[col_mat_pl] = df_pl_valid[col_mat_pl].astype(str).str.strip()
 
-        # Limpeza e conversão rigorosa do N.W (padrão americano com ponto) para somar corretamente
+        # Limpeza e conversão rigorosa do N.W da coluna K (padrão americano com ponto) para somar corretamente
         df_pl_valid[col_nw_pl] = pd.to_numeric(
             df_pl_valid[col_nw_pl].astype(str).str.replace(",", ".").str.replace(r"[^\d.-]", "", regex=True), 
             errors="coerce"
         ).fillna(0)
 
-        # Soma os pesos N.W na PL para cada PartNumber unificado
+        # Soma os pesos N.W da coluna K na PL para cada PartNumber unificado
         pl_agrupado_peso = df_pl_valid.groupby(col_mat_pl, as_index=False)[col_nw_pl].sum()
         mapa_peso_total = dict(zip(pl_agrupado_peso[col_mat_pl], pl_agrupado_peso[col_nw_pl]))
 
@@ -168,7 +166,7 @@ if uploaded_file is not None:
             else:
                 qtd_formatada = qtd_bruta
 
-            # Peso total (N.W somado de todas as aparições daquele partnumber na PL)
+            # Peso total (somando a coluna K da PL para todas as aparições daquele partnumber)
             peso_soma_pl = mapa_peso_total.get(partnumber, 0)
             
             preco_bruto = row[col_cip_ci]
