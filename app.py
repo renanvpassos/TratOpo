@@ -146,7 +146,7 @@ if uploaded_file is not None:
         df_pl_valid = df_pl[df_pl[col_mat_pl].notna()].copy()
         df_pl_valid[col_mat_pl] = df_pl_valid[col_mat_pl].astype(str).str.strip()
 
-        # Limpeza e conversão numérica rigorosa (padrão americano)
+        # Limpeza e conversão numérica rigorosa (padrão americano) usando .str.replace com regex do pandas
         df_pl_valid[col_nw_pl] = pd.to_numeric(
             df_pl_valid[col_nw_pl].astype(str).str.replace(",", ".").str.replace(r"[^\d.-]", "", regex=True), 
             errors="coerce"
@@ -158,13 +158,11 @@ if uploaded_file is not None:
         ).fillna(0)
 
         # Calcula a proporção/peso unitário ponderado na PL para cada PartNumber
-        # Se o item se repete na PL, somamos o peso total e a quantidade total para achar o peso unitário médio real daquele material
         pl_agrupado = df_pl_valid.groupby(col_mat_pl, as_index=False).agg({
             col_nw_pl: "sum",
             col_qty_pl: "sum"
         })
         
-        # Evita divisão por zero
         pl_agrupado["PESO_UNITARIO_CALCULADO"] = pl_agrupado.apply(
             lambda x: x[col_nw_pl] / x[col_qty_pl] if x[col_qty_pl] > 0 else 0, axis=1
         )
@@ -179,11 +177,11 @@ if uploaded_file is not None:
             # Quantidade vem da CI
             qtd_bruta = row[col_qty_ci]
             try:
-                qtd_num = float(str(qtd_bruta).replace(",", ".").replace(r"[^\d.-]", "", regex=True)) if pd.notna(qtd_bruta) else 0
+                qtd_num = float(str(qtd_bruta).replace(",", ".")) if pd.notna(qtd_bruta) else 0
             except ValueError:
                 qtd_num = 0
 
-            if qtd_num.is_integer():
+            if isinstance(qtd_num, float) and qtd_num.is_integer():
                 qtd_formatada = int(qtd_num)
             else:
                 qtd_formatada = qtd_bruta
