@@ -128,8 +128,6 @@ if uploaded_file is not None:
 
         # 2. Configurações da aba PL (Material Code e Coluna K para o Peso / N.W)
         col_mat_pl = encontrar_coluna(df_pl.columns, ["CODE"]) or encontrar_coluna(df_pl.columns, ["MATERIAL"]) or (df_pl.columns[24] if len(df_pl.columns) > 24 else None)
-        
-        # Garante a captura da coluna K (índice 10) ou por nome contendo N.W na coluna K
         col_nw_pl = df_pl.columns[10] if len(df_pl.columns) > 10 else encontrar_coluna(df_pl.columns.astype(str), ["N.W"])
 
         if not col_mat_pl or not col_nw_pl:
@@ -139,7 +137,7 @@ if uploaded_file is not None:
         df_pl_valid = df_pl[df_pl[col_mat_pl].notna()].copy()
         df_pl_valid[col_mat_pl] = df_pl_valid[col_mat_pl].astype(str).str.strip()
 
-        # Limpeza e conversão rigorosa do N.W da coluna K (padrão americano com ponto) para somar corretamente
+        # Limpeza e conversão rigorosa do N.W da coluna K
         df_pl_valid[col_nw_pl] = pd.to_numeric(
             df_pl_valid[col_nw_pl].astype(str).str.replace(",", ".").str.replace(r"[^\d.-]", "", regex=True), 
             errors="coerce"
@@ -154,17 +152,18 @@ if uploaded_file is not None:
         for _, row in df_ci_valid.iterrows():
             partnumber = row[col_mat_ci]
             
-            # Quantidade unificada vem diretamente da CI
-            qtd_bruta = row[col_qty_ci]
+            # Limpeza rigorosa da Quantidade para extrair apenas números puros
+            qtd_bruta = str(row[col_qty_ci])
+            qtd_limpa = re.sub(r"[^\d.]", "", qtd_bruta.replace(",", "."))
             try:
-                qtd_num = float(str(qtd_bruta).replace(",", ".")) if pd.notna(qtd_bruta) else 0
+                qtd_num = float(qtd_limpa) if qtd_limpa != "" else 0
             except ValueError:
                 qtd_num = 0
 
-            if isinstance(qtd_num, float) and qtd_num.is_integer():
+            if qtd_num.is_integer():
                 qtd_formatada = int(qtd_num)
             else:
-                qtd_formatada = qtd_bruta
+                qtd_formatada = qtd_num if qtd_num > 0 else qtd_bruta
 
             # Peso total (somando a coluna K da PL para todas as aparições daquele partnumber)
             peso_soma_pl = mapa_peso_total.get(partnumber, 0)
