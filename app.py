@@ -126,55 +126,37 @@ if uploaded_file is not None:
         df_ci_valid[col_mat_ci] = df_ci_valid[col_mat_ci].astype(str).str.strip()
         df_ci_valid = df_ci_valid[~df_ci_valid[col_mat_ci].str.lower().isin(["total", "nan", ""])]
 
-        # 2. Configurações da aba PL (Material Code, N.W e Quantidade)
+        # 2. Configurações da aba PL (Material Code e coluna N.W exata)
         col_mat_pl = encontrar_coluna(df_pl.columns, ["CODE"]) or encontrar_coluna(df_pl.columns, ["MATERIAL"]) or (df_pl.columns[24] if len(df_pl.columns) > 24 else None)
         col_nw_pl = (
             encontrar_coluna(df_pl.columns.astype(str), ["N.W"], termos_proibidos=["TOTAL"]) or 
             encontrar_coluna(df_pl.columns.astype(str), ["WEIGHT"], termos_proibidos=["TOTAL"]) or 
             (df_pl.columns[10] if len(df_pl.columns) > 10 else None)
         )
-        col_qty_pl = (
-            encontrar_coluna(df_pl.columns.astype(str), ["QUANTITY"]) or 
-            encontrar_coluna(df_pl.columns.astype(str), ["QTY"]) or 
-            (df_pl.columns[8] if len(df_pl.columns) > 8 else None)
-        )
 
-        if not col_mat_pl or not col_nw_pl or not col_qty_pl:
+        if not col_mat_pl or not col_nw_pl:
             st.error(f"Erro ao identificar colunas na aba **PL**. Colunas detectadas: {list(df_pl.columns)}")
             st.stop()
 
         df_pl_valid = df_pl[df_pl[col_mat_pl].notna()].copy()
         df_pl_valid[col_mat_pl] = df_pl_valid[col_mat_pl].astype(str).str.strip()
 
-        # Limpeza e conversão numérica rigorosa (padrão americano) usando .str.replace com regex do pandas
+        # Limpeza e conversão rigorosa do N.W (padrão americano com ponto) para somar corretamente
         df_pl_valid[col_nw_pl] = pd.to_numeric(
             df_pl_valid[col_nw_pl].astype(str).str.replace(",", ".").str.replace(r"[^\d.-]", "", regex=True), 
             errors="coerce"
         ).fillna(0)
-        
-        df_pl_valid[col_qty_pl] = pd.to_numeric(
-            df_pl_valid[col_qty_pl].astype(str).str.replace(",", ".").str.replace(r"[^\d.-]", "", regex=True), 
-            errors="coerce"
-        ).fillna(0)
 
-        # Calcula a proporção/peso unitário ponderado na PL para cada PartNumber
-        pl_agrupado = df_pl_valid.groupby(col_mat_pl, as_index=False).agg({
-            col_nw_pl: "sum",
-            col_qty_pl: "sum"
-        })
-        
-        pl_agrupado["PESO_UNITARIO_CALCULADO"] = pl_agrupado.apply(
-            lambda x: x[col_nw_pl] / x[col_qty_pl] if x[col_qty_pl] > 0 else 0, axis=1
-        )
+        # Soma os pesos N.W na PL para cada PartNumber unificado
+        pl_agrupado_peso = df_pl_valid.groupby(col_mat_pl, as_index=False)[col_nw_pl].sum()
+        mapa_peso_total = dict(zip(pl_agrupado_peso[col_mat_pl], pl_agrupado_peso[col_nw_pl]))
 
-        mapa_peso_unitario = dict(zip(pl_agrupado[col_mat_pl], pl_agrupado["PESO_UNITARIO_CALCULADO"]))
-
-        # 3. Processamento seguindo estritamente a ordem e as linhas da aba CI
+        # 3. Monta o DataFrame final seguindo estritamente as linhas e quantidades da aba CI
         linhas_resultado = []
         for _, row in df_ci_valid.iterrows():
             partnumber = row[col_mat_ci]
             
-            # Quantidade vem da CI
+            # Quantidade unificada vem diretamente da CI
             qtd_bruta = row[col_qty_ci]
             try:
                 qtd_num = float(str(qtd_bruta).replace(",", ".")) if pd.notna(qtd_bruta) else 0
@@ -186,18 +168,15 @@ if uploaded_file is not None:
             else:
                 qtd_formatada = qtd_bruta
 
-            # Peso unitário é buscado na PL (já rateado/calculado por material)
-            peso_unit_calculado = mapa_peso_unitario.get(partnumber, 0)
+            # Peso total (N.W somado de todas as aparições daquele partnumber na PL)
+            peso_soma_pl = mapa_peso_total.get(partnumber, 0)
             
-            # Multiplica o peso unitário pela quantidade da linha da CI para refletir o peso total daquela linha
-            peso_total_linha = peso_unit_calculado * (float(qtd_num) if qtd_num > 0 else 1)
-
             preco_bruto = row[col_cip_ci]
 
             linhas_resultado.append({
                 "PARTNUMBER": partnumber,
                 "MOEDA": "220",
-                "PESOUNITARIO": formatar_numero_br(peso_total_linha),
+                "PESOUNITARIO": formatar_numero_br(peso_soma_pl),
                 "QUANTIDADE": qtd_formatada,
                 "PRECOTOTAL": formatar_numero_br(preco_bruto),
                 "INVOICE": invoice_num,
