@@ -17,7 +17,6 @@ def formatar_numero_br(valor):
         if "," in val_str and "." in val_str:
             val_str = val_str.replace(",", "")
         num = float(val_str)
-        # Substitui o ponto decimal por vírgula mantendo todas as casas decimais originais
         return str(num).replace(".", ",")
     except ValueError:
         return str(valor).replace(".", ",")
@@ -100,7 +99,6 @@ if uploaded_file is not None:
             invoice_num = extrair_invoice(df_pl_raw)
 
         def encontrar_coluna(colunas, termos_obrigatorios, termos_proibidos=None):
-            """Busca flexível de colunas garantindo termos obrigatórios e rejeitando proibidos (ex: evitar 'Total N.W' se quiser apenas 'N.W')."""
             termos_proibidos = termos_proibidos or []
             for c in colunas:
                 c_clean = str(c).upper()
@@ -110,8 +108,9 @@ if uploaded_file is not None:
                     return c
             return None
 
-        # 1. Configurações da aba CI (PartNumber e Preço Total)
+        # 1. Configurações da aba CI (PartNumber, Quantidade e Preço Total)
         col_mat_ci = encontrar_coluna(df_ci.columns, ["CODE"]) or encontrar_coluna(df_ci.columns, ["MATERIAL"])
+        col_qty_ci = encontrar_coluna(df_ci.columns, ["QUANTITY"]) or encontrar_coluna(df_ci.columns, ["QTY"])
         col_cip_ci = (
             encontrar_coluna(df_ci.columns, ["CIP", "AMOUNT"]) or 
             encontrar_coluna(df_ci.columns, ["AMOUNT"]) or 
@@ -119,7 +118,7 @@ if uploaded_file is not None:
             encontrar_coluna(df_ci.columns, ["USD"])
         )
 
-        if not col_mat_ci or not col_cip_ci:
+        if not col_mat_ci or not col_qty_ci or not col_cip_ci:
             st.error(f"Erro ao identificar colunas na aba **CI**. Colunas detectadas: {list(df_ci.columns)}")
             st.stop()
 
@@ -127,16 +126,13 @@ if uploaded_file is not None:
         df_ci_valid[col_mat_ci] = df_ci_valid[col_mat_ci].astype(str).str.strip()
         df_ci_valid = df_ci_valid[~df_ci_valid[col_mat_ci].str.lower().isin(["total", "nan", ""])]
 
-        # 2. Configurações da aba PL (Material Code, N.W exato e Quantidade)
+        # 2. Configurações da aba PL (Material Code, N.W e Quantidade)
         col_mat_pl = encontrar_coluna(df_pl.columns, ["CODE"]) or encontrar_coluna(df_pl.columns, ["MATERIAL"]) or (df_pl.columns[24] if len(df_pl.columns) > 24 else None)
-        
-        # Procura por "N.W" estrito (evitando "TOTAL N.W" caso haja separação)
         col_nw_pl = (
             encontrar_coluna(df_pl.columns.astype(str), ["N.W"], termos_proibidos=["TOTAL"]) or 
             encontrar_coluna(df_pl.columns.astype(str), ["WEIGHT"], termos_proibidos=["TOTAL"]) or 
             (df_pl.columns[10] if len(df_pl.columns) > 10 else None)
         )
-        
         col_qty_pl = (
             encontrar_coluna(df_pl.columns.astype(str), ["QUANTITY"]) or 
             encontrar_coluna(df_pl.columns.astype(str), ["QTY"]) or 
@@ -150,7 +146,7 @@ if uploaded_file is not None:
         df_pl_valid = df_pl[df_pl[col_mat_pl].notna()].copy()
         df_pl_valid[col_mat_pl] = df_pl_valid[col_mat_pl].astype(str).str.strip()
 
-        # Limpeza e conversão numérica rigorosa para padrão americano (ponto decimal) para realizar a soma correta
+        # Limpeza e conversão numérica rigorosa (padrão americano)
         df_pl_valid[col_nw_pl] = pd.to_numeric(
             df_pl_valid[col_nw_pl].astype(str).str.replace(",", ".").str.replace(r"[^\d.-]", "", regex=True), 
             errors="coerce"
@@ -161,32 +157,49 @@ if uploaded_file is not None:
             errors="coerce"
         ).fillna(0)
 
-        # Agrupa na PL somando os pesos e quantidades para cada PartNumber duplicado
+        # Calcula a proporção/peso unitário ponderado na PL para cada PartNumber
+        # Se o item se repete na PL, somamos o peso total e a quantidade total para achar o peso unitário médio real daquele material
         pl_agrupado = df_pl_valid.groupby(col_mat_pl, as_index=False).agg({
             col_nw_pl: "sum",
             col_qty_pl: "sum"
         })
+        
+        # Evita divisão por zero
+        pl_agrupado["PESO_UNITARIO_CALCULADO"] = pl_agrupado.apply(
+            lambda x: x[col_nw_pl] / x[col_qty_pl] if x[col_qty_pl] > 0 else 0, axis=1
+        )
 
-        mapa_peso = dict(zip(pl_agrupado[col_mat_pl], pl_agrupado[col_nw_pl]))
-        mapa_qtd = dict(zip(pl_agrupado[col_mat_pl], pl_agrupado[col_qty_pl]))
+        mapa_peso_unitario = dict(zip(pl_agrupado[col_mat_pl], pl_agrupado["PESO_UNITARIO_CALCULADO"]))
 
-        # Monta o DataFrame final baseando-se nos itens da CI, puxando Peso Unitário e Quantidade somados da PL
+        # 3. Processamento seguindo estritamente a ordem e as linhas da aba CI
         linhas_resultado = []
         for _, row in df_ci_valid.iterrows():
             partnumber = row[col_mat_ci]
-            peso_bruto = mapa_peso.get(partnumber, 0)
-            qtd_bruta = mapa_qtd.get(partnumber, 0)
-            preco_bruto = row[col_cip_ci]
+            
+            # Quantidade vem da CI
+            qtd_bruta = row[col_qty_ci]
+            try:
+                qtd_num = float(str(qtd_bruta).replace(",", ".").replace(r"[^\d.-]", "", regex=True)) if pd.notna(qtd_bruta) else 0
+            except ValueError:
+                qtd_num = 0
 
-            if isinstance(qtd_bruta, float) and qtd_bruta.is_integer():
-                qtd_formatada = int(qtd_bruta)
+            if qtd_num.is_integer():
+                qtd_formatada = int(qtd_num)
             else:
                 qtd_formatada = qtd_bruta
+
+            # Peso unitário é buscado na PL (já rateado/calculado por material)
+            peso_unit_calculado = mapa_peso_unitario.get(partnumber, 0)
+            
+            # Multiplica o peso unitário pela quantidade da linha da CI para refletir o peso total daquela linha
+            peso_total_linha = peso_unit_calculado * (float(qtd_num) if qtd_num > 0 else 1)
+
+            preco_bruto = row[col_cip_ci]
 
             linhas_resultado.append({
                 "PARTNUMBER": partnumber,
                 "MOEDA": "220",
-                "PESOUNITARIO": formatar_numero_br(peso_bruto),
+                "PESOUNITARIO": formatar_numero_br(peso_total_linha),
                 "QUANTIDADE": qtd_formatada,
                 "PRECOTOTAL": formatar_numero_br(preco_bruto),
                 "INVOICE": invoice_num,
