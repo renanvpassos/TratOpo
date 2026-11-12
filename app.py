@@ -38,40 +38,51 @@ def extrair_invoice(df_raw):
     return "NÃO ENCONTRADO"
 
 def carregar_aba_inteligente(excel_data, sheet_name):
-    """Carrega a aba unificando cabeçalhos divididos em linhas múltiplas."""
+    """Carrega a aba identificando a linha real do cabeçalho por pontuação de palavras-chave."""
     df_raw = pd.read_excel(excel_data, sheet_name=sheet_name, header=None)
     
-    # Procura nas primeiras 12 linhas a linha que contém o identificador 'code' ou 'material'
-    header_idx = None
-    for idx in range(min(12, len(df_raw))):
-        row_vals = " ".join([str(v).strip().lower() for v in df_raw.iloc[idx].values if pd.notna(v)])
-        if "code" in row_vals or "material" in row_vals:
-            header_idx = idx
-            break
-            
-    if header_idx is None:
-        header_idx = 0
-
-    # Se o cabeçalho for duplo (ex: MATERIAL em cima e CODE embaixo), une as duas linhas
-    if header_idx + 1 < len(df_raw):
-        cols = []
-        for col_i in range(df_raw.shape[1]):
-            val1 = str(df_raw.iloc[header_idx, col_i]).strip()
-            val2 = str(df_raw.iloc[header_idx + 1, col_i]).strip()
-            
-            parts = []
-            if val1 and val1.lower() != 'nan':
-                parts.append(val1)
-            if val2 and val2.lower() != 'nan' and val2.lower() not in parts:
-                parts.append(val2)
-            cols.append(" ".join(parts).upper())
-            
-        df = df_raw.iloc[header_idx + 2:].copy()
-        df.columns = cols
-    else:
-        df = df_raw.iloc[header_idx + 1:].copy()
-        df.columns = [str(c).strip().upper() for c in df_raw.iloc[header_idx].values]
+    best_row = 0
+    max_score = -1
+    palavras_chave = ["code", "material", "amount", "price", "qty", "quantity", "weight", "n.w", "cip", "description"]
+    
+    # Varre as primeiras 30 linhas para achar a linha de cabeçalho ideal (evitando blocos de endereço)
+    for idx in range(min(30, len(df_raw))):
+        row_vals = [str(v).strip().lower() for v in df_raw.iloc[idx].values if pd.notna(v)]
         
+        # Pontua com base em quantas colunas típicas de tabela aparecem na linha
+        score = sum(1 for p in palavras_chave if any(p in v for v in row_vals))
+        tem_material_ou_code = any("code" in v or "material" in v for v in row_vals)
+        
+        if tem_material_ou_code and score > max_score:
+            max_score = score
+            best_row = idx
+            
+    header_idx = best_row if max_score > 0 else 0
+
+    # Verifica se a linha seguinte complementa o cabeçalho (cabeçalho duplo: ex. MATERIAL em cima e CODE embaixo)
+    if header_idx + 1 < len(df_raw):
+        next_row_vals = [str(v).strip().lower() for v in df_raw.iloc[header_idx + 1].values if pd.notna(v)]
+        score_next = sum(1 for p in palavras_chave if any(p in v for v in next_row_vals))
+        
+        if score_next >= 1 or any(v in ["code", "usd", "amount", "quantity", "n.w"] for v in next_row_vals):
+            cols = []
+            for col_i in range(df_raw.shape[1]):
+                val1 = str(df_raw.iloc[header_idx, col_i]).strip()
+                val2 = str(df_raw.iloc[header_idx + 1, col_i]).strip()
+                
+                parts = []
+                if val1 and val1.lower() != 'nan':
+                    parts.append(val1)
+                if val2 and val2.lower() != 'nan' and val2.lower() not in parts:
+                    parts.append(val2)
+                cols.append(" ".join(parts).upper())
+                
+            df = df_raw.iloc[header_idx + 2:].copy()
+            df.columns = cols
+            return df, df_raw
+
+    df = df_raw.iloc[header_idx + 1:].copy()
+    df.columns = [str(c).strip().upper() for c in df_raw.iloc[header_idx].values]
     return df, df_raw
 
 uploaded_file = st.file_uploader("Selecione a planilha de origem (.xlsx ou .xls)", type=["xlsx", "xls"])
@@ -84,16 +95,13 @@ if uploaded_file is not None:
             st.error("A planilha precisa conter exatamente as abas **CI** e **PL**.")
             st.stop()
 
-        # Carrega as abas com detecção inteligente de cabeçalho múltiplo
         df_ci, df_ci_raw = carregar_aba_inteligente(excel_data, "CI")
         df_pl, df_pl_raw = carregar_aba_inteligente(excel_data, "PL")
 
-        # Extrai a invoice da planilha bruta
         invoice_num = extrair_invoice(df_ci_raw)
         if invoice_num == "NÃO ENCONTRADO":
             invoice_num = extrair_invoice(df_pl_raw)
 
-        # Identificação flexível das colunas por palavras-chave
         def encontrar_coluna(colunas, termos):
             for c in colunas:
                 c_clean = str(c).upper()
@@ -101,14 +109,20 @@ if uploaded_file is not None:
                     return c
             return None
 
+        # Busca flexível para as colunas da CI
         col_mat_ci = encontrar_coluna(df_ci.columns, ["CODE"]) or encontrar_coluna(df_ci.columns, ["MATERIAL"])
-        col_cip_ci = encontrar_coluna(df_ci.columns, ["CIP", "AMOUNT"]) or encontrar_coluna(df_ci.columns, ["AMOUNT"])
+        col_cip_ci = (
+            encontrar_coluna(df_ci.columns, ["CIP", "AMOUNT"]) or 
+            encontrar_coluna(df_ci.columns, ["AMOUNT"]) or 
+            encontrar_coluna(df_ci.columns, ["PRICE"]) or
+            encontrar_coluna(df_ci.columns, ["USD"])
+        )
 
         if not col_mat_ci:
             st.error(f"Não foi possível encontrar a coluna de Código/Material na aba **CI**. Colunas detectadas: {list(df_ci.columns)}")
             st.stop()
         if not col_cip_ci:
-            st.error(f"Não foi possível encontrar a coluna de Preço/CIP Amount na aba **CI**. Colunas detectadas: {list(df_ci.columns)}")
+            st.error(f"Não foi possível encontrar a coluna de Preço/Amount na aba **CI**. Colunas detectadas: {list(df_ci.columns)}")
             st.stop()
 
         # Filtra linhas válidas da CI
@@ -128,7 +142,6 @@ if uploaded_file is not None:
         df_pl_valid = df_pl[df_pl[col_mat_pl].notna()].copy()
         df_pl_valid[col_mat_pl] = df_pl_valid[col_mat_pl].astype(str).str.strip()
 
-        # Converte para numérico e agrupa caso haja duplicadas
         df_pl_valid[col_nw_pl] = pd.to_numeric(df_pl_valid[col_nw_pl].astype(str).str.replace(",", "."), errors="coerce").fillna(0)
         df_pl_valid[col_qty_pl] = pd.to_numeric(df_pl_valid[col_qty_pl].astype(str).str.replace(",", "."), errors="coerce").fillna(0)
 
@@ -140,7 +153,6 @@ if uploaded_file is not None:
         mapa_peso = dict(zip(pl_agrupado[col_mat_pl], pl_agrupado[col_nw_pl]))
         mapa_qtd = dict(zip(pl_agrupado[col_mat_pl], pl_agrupado[col_qty_pl]))
 
-        # Monta o DataFrame final
         linhas_resultado = []
         for _, row in df_ci_valid.iterrows():
             partnumber = row[col_mat_ci]
