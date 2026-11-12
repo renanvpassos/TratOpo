@@ -3,9 +3,9 @@ import pandas as pd
 import io
 import re
 
-st.set_page_config(page_title="Conversor CI / PL", page_icon="📊", layout="wide")
+st.set_page_config(page_title="Tratamento Planilha", page_icon="📊", layout="wide")
 
-st.title("📊 Tratamento de Planilha - CI & PL")
+st.title("📊 Tratamento de Planilha")
 st.write("Anexe a planilha de origem contendo as abas **CI** e **PL** para gerar o arquivo tratado.")
 
 def formatar_numero_br(valor):
